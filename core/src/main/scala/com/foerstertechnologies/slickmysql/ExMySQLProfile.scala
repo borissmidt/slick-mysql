@@ -1,7 +1,6 @@
 package com.foerstertechnologies.slickmysql
 
 import java.util.UUID
-
 import slick.SlickException
 import slick.ast._
 import slick.compiler.CompilerState
@@ -16,14 +15,15 @@ import scala.reflect.{ClassTag, classTag}
 
 trait ExMySQLProfile extends JdbcProfile with MySQLProfile with Logging { self =>
 
-  /*
-  override def createQueryBuilder(n: Node, state: CompilerState): QueryBuilder = new QueryBuilder(n, state)
   override def createUpsertBuilder(node: Insert): InsertBuilder =
     if (useNativeUpsert) new NativeUpsertBuilder(node) else new super.UpsertBuilder(node)
+  /*
+  override def createQueryBuilder(n: Node, state: CompilerState): QueryBuilder = new QueryBuilder(n, state)
+
   override def createTableDDLBuilder(table: Table[_]): TableDDLBuilder = new TableDDLBuilder(table)
   override def createModelBuilder(tables: Seq[MTable], ignoreInvalidDefaults: Boolean)(implicit ec: ExecutionContext): JdbcModelBuilder =
     new ExModelBuilder(tables, ignoreInvalidDefaults)
-*/
+   */
   protected lazy val useNativeUpsert = capabilities contains JdbcCapabilities.insertOrUpdate
   // override protected lazy val useTransactionForUpsert = !useNativeUpsert
   // override protected lazy val useServerSideUpsertReturning = useNativeUpsert
@@ -41,13 +41,12 @@ trait ExMySQLProfile extends JdbcProfile with MySQLProfile with Logging { self =
     implicit class AggFuncOver[R: TypedType](aggFunc: agg.AggFuncRep[R]) {
       def over = window.WindowFuncRep[R](aggFunc._parts.toNode(implicitly[TypedType[R]]))
     }
-    */
+     */
     ///
-    /*
+
     implicit def multiUpsertExtensionMethods[U, C[_]](q: Query[_, U, C]): InsertActionComposerImpl[U] =
       new InsertActionComposerImpl[U](compileInsert(q.toNode))
 
-     */
   }
 
   /*
@@ -70,7 +69,6 @@ trait ExMySQLProfile extends JdbcProfile with MySQLProfile with Logging { self =
   /*************************************************************************
     *                 for aggregate and window function support
     *************************************************************************/
-
   /*
   class QueryBuilder(tree: Node, state: CompilerState) extends super.QueryBuilder(tree, state) {
     import slick.util.MacroSupport.macroSupportInterpolation
@@ -99,54 +97,54 @@ trait ExMySQLProfile extends JdbcProfile with MySQLProfile with Logging { self =
       case _ => super.expr(n, skipParens)
     }
   }
-  */
+   */
 
   /***********************************************************************
     *                          for upsert support
     ***********************************************************************/
-
-  /*
   class NativeUpsertBuilder(ins: Insert) extends super.InsertBuilder(ins) {
     /* NOTE: pk defined by using method `primaryKey` and pk defined with `PrimaryKey` can only have one,
              here we let table ddl to help us ensure this. */
-    private lazy val funcDefinedPKs = table.profileTable.asInstanceOf[Table[_]].primaryKeys
     private lazy val (nonPkAutoIncSyms, insertingSyms) = syms.toSeq.partition { s =>
-      s.options.contains(ColumnOption.AutoInc) && !(s.options contains ColumnOption.PrimaryKey) }
-    private lazy val (pkSyms, softSyms) = insertingSyms.partition { sym =>
-      sym.options.contains(ColumnOption.PrimaryKey) || funcDefinedPKs.exists(pk => pk.columns.collect {
-        case Select(_, f: FieldSymbol) => f
-      }.exists(_.name == sym.name)) }
-    private lazy val insertNames = insertingSyms.map { fs => quoteIdentifier(fs.name) }
-    private lazy val pkNames = pkSyms.map { fs => quoteIdentifier(fs.name) }
-    private lazy val softNames = softSyms.map { fs => quoteIdentifier(fs.name) }
-
-    override def buildInsert: InsertBuilderResult = {
-      val insert = s"insert into $tableName (${insertNames.mkString(",")}) values (${insertNames.map(_ => "?").mkString(",")})"
-      val conflictWithPadding = "conflict (" + pkNames.mkString(", ") + ")" +
-        (/* padding */ if (nonPkAutoIncSyms.isEmpty) "" else "where ? is null or ?=?")
-      val updateOrNothing = if (softNames.isEmpty) "nothing" else
-        "update set " + softNames.map(n => s"$n=EXCLUDED.$n").mkString(",")
-      new InsertBuilderResult(table, s"$insert on $conflictWithPadding do $updateOrNothing", syms)
+      s.options.contains(ColumnOption.AutoInc) && !(s.options contains ColumnOption.PrimaryKey)
     }
 
-    override def transformMapping(n: Node) = reorderColumns(n,
-      insertingSyms ++ nonPkAutoIncSyms ++ nonPkAutoIncSyms ++ nonPkAutoIncSyms)
+    private lazy val insertNames = insertingSyms.map { fs => quoteIdentifier(fs.name) }
+    val unquoted = insertNames.map(_.tail.init)
+
+    override def buildInsert: InsertBuilderResult = {
+      val columns = insertNames.mkString(",")
+      val namedParameters = insertNames.map(_ => "?").mkString(",")
+      val pairs = insertNames.map(column => s"$column = values($column)").mkString(",")
+
+      val upsert = s"""insert into $tableName ($columns) values ($namedParameters)
+                      |on duplicate key update
+                      |  $pairs;
+                      |""".stripMargin
+
+      new InsertBuilderResult(table, upsert, syms)
+    }
+
+    override def transformMapping(n: Node) =
+      reorderColumns(n, insertingSyms ++ nonPkAutoIncSyms ++ nonPkAutoIncSyms ++ nonPkAutoIncSyms)
   }
 
   protected class InsertActionComposerImpl[U](override val compiled: CompiledInsert)
-    extends super.CountingInsertActionComposerImpl[U](compiled) {
+      extends super.CountingInsertActionComposerImpl[U](compiled) {
 
     /** Upsert a batch of records - insert rows whose primary key is not present in
       * the table, and update rows whose primary key is present.. */
     def insertOrUpdateAll(values: Iterable[U]): ProfileAction[MultiInsertResult, NoStream, Effect.Write] =
       if (useNativeUpsert)
         new MultiInsertOrUpdateAction(values)
-      else throw new IllegalStateException("Cannot insertOrUpdateAll in without native upsert capability. " +
-        "Instead use DBIO.sequence(values.map(query.insertOrUpdate))")
+      else
+        throw new IllegalStateException(
+          "Cannot insertOrUpdateAll in without native upsert capability. " +
+            "Instead use DBIO.sequence(values.map(query.insertOrUpdate))"
+        )
 
-    ///
-    class MultiInsertOrUpdateAction(values: Iterable[U]) extends SimpleJdbcProfileAction[MultiInsertResult](
-      "MultiInsertOrUpdateAction", Vector(compiled.upsert.sql)) {
+    class MultiInsertOrUpdateAction(values: Iterable[U])
+        extends SimpleJdbcProfileAction[MultiInsertResult]("MultiInsertOrUpdateAction", Vector(compiled.upsert.sql)) {
 
       private def tableHasPrimaryKey: Boolean =
         List(compiled.upsert, compiled.checkInsert, compiled.updateInsert)
@@ -162,14 +160,16 @@ trait ExMySQLProfile extends JdbcProfile with MySQLProfile with Logging { self =
       override def run(ctx: Backend#Context, sql: Vector[String]) =
         nativeUpsert(values, sql.head)(ctx.session)
 
-      protected def nativeUpsert(values: Iterable[U], sql: String)(
-        implicit session: Backend#Session): MultiInsertResult =
+      protected def nativeUpsert(
+          values: Iterable[U],
+          sql: String
+        )(
+          implicit session: Backend#Session
+        ): MultiInsertResult =
         preparedInsert(sql, session) { st =>
           st.clearParameters()
           for (value <- values) {
-            compiled
-              .upsert
-              .converter
+            compiled.upsert.converter
               .set(value, st)
             st.addBatch()
           }
@@ -178,12 +178,10 @@ trait ExMySQLProfile extends JdbcProfile with MySQLProfile with Logging { self =
         }
     }
   }
-*/
 
   /***********************************************************************
     *                          for codegen support
     ***********************************************************************/
-
   private var mySQLTypeToScala = Map.empty[String, ClassTag[_]]
 
   /** NOTE: used to support code gen */
@@ -191,9 +189,10 @@ trait ExMySQLProfile extends JdbcProfile with MySQLProfile with Logging { self =
     logger.info(s"\u001B[36m >>> binding $mySQLType -> $scalaType \u001B[0m")
     mySQLTypeToScala.synchronized {
       val existed = mySQLTypeToScala.get(mySQLType)
-      if (existed.isDefined && !existed.get.equals(scalaType)) logger.warn(
-        s"\u001B[31m >>> DUPLICATED binding for $mySQLType - existed: ${existed.get}, new: $scalaType !!! \u001B[36m If it's expected, pls ignore it.\u001B[0m"
-      )
+      if (existed.isDefined && !existed.get.equals(scalaType))
+        logger.warn(
+          s"\u001B[31m >>> DUPLICATED binding for $mySQLType - existed: ${existed.get}, new: $scalaType !!! \u001B[36m If it's expected, pls ignore it.\u001B[0m"
+        )
       mySQLTypeToScala += (mySQLType -> scalaType)
     }
   }
@@ -205,7 +204,7 @@ trait ExMySQLProfile extends JdbcProfile with MySQLProfile with Logging { self =
   }
 
   class ExModelBuilder(mTables: Seq[MTable], ignoreInvalidDefaults: Boolean)(implicit ec: ExecutionContext)
-    extends super.ModelBuilder(mTables, ignoreInvalidDefaults) {
+      extends super.ModelBuilder(mTables, ignoreInvalidDefaults) {
     override def jdbcTypeToScala(jdbcType: Int, typeName: String = ""): ClassTag[_] = {
       logger.info(s"[info]\u001B[36m jdbcTypeToScala - jdbcType $jdbcType, typeName: $typeName \u001B[0m")
       mySQLTypeToScala.get(typeName).getOrElse(super.jdbcTypeToScala(jdbcType, typeName))
@@ -249,5 +248,7 @@ trait ExMySQLProfile extends JdbcProfile with MySQLProfile with Logging { self =
     }
   }
 
-   */
+ */
 }
+
+object ExMySQLProfile extends ExMySQLProfile
